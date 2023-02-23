@@ -4,21 +4,42 @@ import {v4 as uuidv4} from 'uuid'
 import * as core from '@actions/core'
 import {setCheckRunOutput} from './output'
 import * as os from 'os'
+import fs from 'node:fs/promises'
 import chalk from 'chalk'
 
 const color = new chalk.Instance({level: 1})
 
+export type TestType = 'simple' | 'external'
+
+export interface TestBase {
+  readonly type?: TestType
+  readonly name: string
+  readonly setup?: string
+  readonly run: string
+  readonly timeout?: number
+}
+
 export type TestComparison = 'exact' | 'included' | 'regex'
 
-export interface Test {
-  readonly name: string
-  readonly setup: string
-  readonly run: string
+export interface SimpleTest extends TestBase {
+  readonly type?: 'simple' // Optional for backwards compatibility
+  readonly points?: number
   readonly input?: string
   readonly output?: string
-  readonly timeout: number
-  readonly points?: number
-  readonly comparison: TestComparison
+  readonly comparison?: TestComparison
+}
+
+export interface ExternalTest extends TestBase {
+  readonly type: 'external'
+  readonly resultFile?: string
+}
+
+export type Test = SimpleTest | ExternalTest
+
+interface AutogradeResults {
+  score?: number
+  max_score?: number
+  execution_time?: number
 }
 
 export class TestError extends Error {
@@ -139,6 +160,7 @@ const runCommand = async (test: Test, cwd: string, timeout: number): Promise<voi
   // Start with a single new line
   process.stdout.write(indent('\n'))
 
+  // TODO We only really need to capture output for 'simple' test type
   child.stdout.on('data', (chunk) => {
     process.stdout.write(indent(chunk))
     output += chunk
@@ -149,12 +171,17 @@ const runCommand = async (test: Test, cwd: string, timeout: number): Promise<voi
   })
 
   // Preload the inputs
-  if (test.input && test.input !== '') {
+  if ((test.type === undefined || test.type === 'simple') && test.input && test.input !== '') {
     child.stdin.write(test.input)
     child.stdin.end()
   }
 
   await waitForExit(child, timeout)
+
+  //
+  if (test.type && test.type !== 'simple') {
+    return
+  }
 
   // Eventually work off the the test type
   if ((!test.output || test.output == '') && (!test.input || test.input == '')) {
@@ -211,19 +238,39 @@ export const runAll = async (tests: Array<Test>, cwd: string): Promise<void> => 
 
   for (const test of tests) {
     try {
-      if (test.points) {
-        hasPoints = true
-        availablePoints += test.points
-      }
       log(color.cyan(`📝 ${test.name}`))
       log('')
-      await run(test, cwd)
+      switch (test.type) {
+        case undefined:
+        case 'simple': {
+          if (test.points) {
+            hasPoints = true
+            availablePoints += test.points
+          }
+          await run(test, cwd)
+          if (test.points) {
+            points += test.points
+          }
+          break
+        }
+        case 'external': {
+          await run(test, cwd)
+          const autograde: AutogradeResults = JSON.parse(
+            await fs.readFile(test?.resultFile || 'autograde.json', {encoding: 'utf8'}),
+          )
+          const score = autograde.score
+          const maxScore = autograde.max_score
+          if (score && maxScore) {
+            hasPoints = true
+            points += score
+            availablePoints += maxScore
+          }
+          break
+        }
+      }
       log('')
       log(color.green(`✅ ${test.name}`))
-      log(``)
-      if (test.points) {
-        points += test.points
-      }
+      log('')
     } catch (error) {
       failed = true
       log('')
