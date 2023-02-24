@@ -11789,7 +11789,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.runAll = exports.run = exports.TestOutputError = exports.TestTimeoutError = exports.TestError = void 0;
+exports.runAll = exports.run = exports.TestOutputError = exports.TestTimeoutError = exports.TestExitError = exports.TestError = exports.DEFAULT_RESULT_FILE = void 0;
 const child_process_1 = __nccwpck_require__(2081);
 const tree_kill_1 = __importDefault(__nccwpck_require__(9335));
 const uuid_1 = __nccwpck_require__(5840);
@@ -11799,6 +11799,8 @@ const os = __importStar(__nccwpck_require__(2037));
 const promises_1 = __importDefault(__nccwpck_require__(3977));
 const chalk_1 = __importDefault(__nccwpck_require__(8818));
 const color = new chalk_1.default.Instance({ level: 1 });
+// eslint-disable-next-line @typescript-eslint/naming-convention
+exports.DEFAULT_RESULT_FILE = 'autograde.json';
 class TestError extends Error {
     constructor(message) {
         super(message);
@@ -11806,6 +11808,17 @@ class TestError extends Error {
     }
 }
 exports.TestError = TestError;
+class TestExitError extends Error {
+    code;
+    signal;
+    constructor(message, code, signal) {
+        super(message);
+        this.code = code;
+        this.signal = signal;
+        Error.captureStackTrace(this, TestError);
+    }
+}
+exports.TestExitError = TestExitError;
 class TestTimeoutError extends TestError {
     constructor(message) {
         super(message);
@@ -11854,7 +11867,7 @@ const waitForExit = async (child, timeout) => {
                 resolve(undefined);
             }
             else {
-                reject(new TestError(`Error: Exit with code: ${code} and signal: ${signal}`));
+                reject(new TestExitError(`Error: Exit with code: ${code} and signal: ${signal}`, code, signal));
             }
         });
         child.once('error', (error) => {
@@ -11965,43 +11978,37 @@ const runAll = async (tests, cwd) => {
     log('');
     log(`::stop-commands::${token}`);
     log('');
-    let failed = false;
+    let someFailed = false;
     for (const test of tests) {
+        const resultFile = test.type === 'external' ? test.resultFile || exports.DEFAULT_RESULT_FILE : undefined;
+        if (resultFile) {
+            // Output warning if result file already exists
+            try {
+                await promises_1.default.access(resultFile);
+                core.warning(`Result file ${resultFile} already exists at start of test run`);
+            }
+            catch (error) {
+                // All good, file should not exist
+            }
+        }
         try {
             log(color.cyan(`📝 ${test.name}`));
             log('');
-            switch (test.type) {
-                case undefined:
-                case 'simple': {
-                    if (test.points) {
-                        hasPoints = true;
-                        availablePoints += test.points;
-                    }
-                    await (0, exports.run)(test, cwd);
-                    if (test.points) {
-                        points += test.points;
-                    }
-                    break;
-                }
-                case 'external': {
-                    await (0, exports.run)(test, cwd);
-                    const autograde = JSON.parse(await promises_1.default.readFile(test?.resultFile || 'autograde.json', { encoding: 'utf8' }));
-                    const score = autograde.score;
-                    const maxScore = autograde.max_score;
-                    if (score && maxScore) {
-                        hasPoints = true;
-                        points += score;
-                        availablePoints += maxScore;
-                    }
-                    break;
-                }
+            if ((test.type === undefined || test.type === 'simple') && test.points) {
+                hasPoints = true;
+                availablePoints += test.points;
+            }
+            await (0, exports.run)(test, cwd);
+            // No exception raised, test passed
+            if ((test.type === undefined || test.type === 'simple') && test.points) {
+                points += test.points;
             }
             log('');
             log(color.green(`✅ ${test.name}`));
             log('');
         }
         catch (error) {
-            failed = true;
+            someFailed = true;
             log('');
             log(color.red(`❌ ${test.name}`));
             if (error instanceof Error) {
@@ -12011,11 +12018,30 @@ const runAll = async (tests, cwd) => {
                 core.setFailed(`Failed to run test '${test.name}'`);
             }
         }
+        if (resultFile) {
+            try {
+                const autograde = JSON.parse(await promises_1.default.readFile(resultFile, { encoding: 'utf8' }));
+                const score = autograde.score;
+                const maxScore = autograde.max_score;
+                if (score && maxScore) {
+                    hasPoints = true;
+                    points += score;
+                    availablePoints += maxScore;
+                }
+                // Remove result file
+                await promises_1.default.rm(resultFile, { force: true });
+            }
+            catch (error) {
+                if (error instanceof Error) {
+                    core.warning(`Error reading ${resultFile}: ${error.message}`);
+                }
+            }
+        }
     }
     // Restart command processing
     log('');
     log(`::${token}::`);
-    if (failed) {
+    if (someFailed) {
         // We need a good failure experience
     }
     else {
