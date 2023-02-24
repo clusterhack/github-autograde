@@ -9,6 +9,9 @@ import chalk from 'chalk'
 
 const color = new chalk.Instance({level: 1})
 
+// eslint-disable-next-line @typescript-eslint/naming-convention
+export const DEFAULT_RESULT_FILE = 'autograde.json'
+
 export type TestType = 'simple' | 'external'
 
 export interface TestBase {
@@ -45,6 +48,18 @@ interface AutogradeResults {
 export class TestError extends Error {
   constructor(message: string) {
     super(message)
+    Error.captureStackTrace(this, TestError)
+  }
+}
+
+export class TestExitError extends Error {
+  code?: number
+  signal?: string
+
+  constructor(message: string, code?: number, signal?: string) {
+    super(message)
+    this.code = code
+    this.signal = signal
     Error.captureStackTrace(this, TestError)
   }
 }
@@ -102,7 +117,7 @@ const waitForExit = async (child: ChildProcess, timeout: number): Promise<void> 
       if (code === 0) {
         resolve(undefined)
       } else {
-        reject(new TestError(`Error: Exit with code: ${code} and signal: ${signal}`))
+        reject(new TestExitError(`Error: Exit with code: ${code} and signal: ${signal}`, code, signal))
       }
     })
 
@@ -234,45 +249,38 @@ export const runAll = async (tests: Array<Test>, cwd: string): Promise<void> => 
   log(`::stop-commands::${token}`)
   log('')
 
-  let failed = false
+  let someFailed = false
 
   for (const test of tests) {
+    const resultFile = test.type === 'external' ? test.resultFile || DEFAULT_RESULT_FILE : undefined
+    if (resultFile) {
+      // Output warning if result file already exists
+      try {
+        await fs.access(resultFile)
+        core.warning(`Result file ${resultFile} already exists at start of test run`)
+      } catch (error) {
+        // All good, file should not exist
+      }
+    }
+
     try {
       log(color.cyan(`📝 ${test.name}`))
       log('')
-      switch (test.type) {
-        case undefined:
-        case 'simple': {
-          if (test.points) {
-            hasPoints = true
-            availablePoints += test.points
-          }
-          await run(test, cwd)
-          if (test.points) {
-            points += test.points
-          }
-          break
-        }
-        case 'external': {
-          await run(test, cwd)
-          const autograde: AutogradeResults = JSON.parse(
-            await fs.readFile(test?.resultFile || 'autograde.json', {encoding: 'utf8'}),
-          )
-          const score = autograde.score
-          const maxScore = autograde.max_score
-          if (score && maxScore) {
-            hasPoints = true
-            points += score
-            availablePoints += maxScore
-          }
-          break
-        }
+
+      if ((test.type === undefined || test.type === 'simple') && test.points) {
+        hasPoints = true
+        availablePoints += test.points
+      }
+      await run(test, cwd)
+      // No exception raised, test passed
+      if ((test.type === undefined || test.type === 'simple') && test.points) {
+        points += test.points
       }
       log('')
       log(color.green(`✅ ${test.name}`))
       log('')
     } catch (error) {
-      failed = true
+      someFailed = true
       log('')
       log(color.red(`❌ ${test.name}`))
       if (error instanceof Error) {
@@ -281,13 +289,32 @@ export const runAll = async (tests: Array<Test>, cwd: string): Promise<void> => 
         core.setFailed(`Failed to run test '${test.name}'`)
       }
     }
+
+    if (resultFile) {
+      try {
+        const autograde: AutogradeResults = JSON.parse(await fs.readFile(resultFile, {encoding: 'utf8'}))
+        const score = autograde.score
+        const maxScore = autograde.max_score
+        if (score && maxScore) {
+          hasPoints = true
+          points += score
+          availablePoints += maxScore
+        }
+        // Remove result file
+        await fs.rm(resultFile, {force: true})
+      } catch (error) {
+        if (error instanceof Error) {
+          core.warning(`Error reading ${resultFile}: ${error.message}`)
+        }
+      }
+    }
   }
 
   // Restart command processing
   log('')
   log(`::${token}::`)
 
-  if (failed) {
+  if (someFailed) {
     // We need a good failure experience
   } else {
     log('')
