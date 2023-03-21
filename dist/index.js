@@ -12028,8 +12028,18 @@ const runAll = async (tests, cwd) => {
                     points += score;
                     availablePoints += maxScore;
                 }
-                // Remove result file
-                await promises_1.default.rm(resultFile, { force: true });
+                // Remove result file (unless otherwise specified)
+                // XXX This code is too messy for type inference (even with "resultFile !== undefined" condition above)
+                const extTest = test;
+                if (extTest.keepResultFile === undefined) {
+                    core.warning('Please explicitly set "keepResultFile: false" in autograding.json');
+                }
+                if (extTest.keepResultFile === true && resultFile === exports.DEFAULT_RESULT_FILE) {
+                    core.warning('Keeping result file with default filename; are you sure?');
+                }
+                if (extTest.keepResultFile !== true) {
+                    await promises_1.default.rm(resultFile, { force: true });
+                }
             }
             catch (error) {
                 if (error instanceof Error) {
