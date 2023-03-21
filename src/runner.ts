@@ -35,6 +35,7 @@ export interface SimpleTest extends TestBase {
 export interface ExternalTest extends TestBase {
   readonly type: 'external'
   readonly resultFile?: string
+  readonly keepResultFile?: boolean
 }
 
 export type Test = SimpleTest | ExternalTest
@@ -300,8 +301,18 @@ export const runAll = async (tests: Array<Test>, cwd: string): Promise<void> => 
           points += score
           availablePoints += maxScore
         }
-        // Remove result file
-        await fs.rm(resultFile, {force: true})
+        // Remove result file (unless otherwise specified)
+        // XXX This code is too messy for type inference (even with "resultFile !== undefined" condition above)
+        const extTest = test as ExternalTest
+        if (extTest.keepResultFile === undefined) {
+          core.warning('Please explicitly set "keepResultFile: false" in autograding.json')
+        }
+        if (extTest.keepResultFile === true && resultFile === DEFAULT_RESULT_FILE) {
+          core.warning('Keeping result file with default filename; are you sure?')
+        }
+        if (extTest.keepResultFile !== true) {
+          await fs.rm(resultFile, {force: true})
+        }
       } catch (error) {
         if (error instanceof Error) {
           core.warning(`Error reading ${resultFile}: ${error.message}`)
