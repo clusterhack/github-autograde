@@ -296,7 +296,7 @@ export const runAll = async (tests: Array<Test>, cwd: string): Promise<void> => 
         const autograde: AutogradeResults = JSON.parse(await fs.readFile(resultFile, {encoding: 'utf8'}))
         const score = autograde.score
         const maxScore = autograde.max_score
-        if (score && maxScore) {
+        if (score !== undefined && maxScore !== undefined) {
           hasPoints = true
           points += score
           availablePoints += maxScore
